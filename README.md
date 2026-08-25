@@ -1,4 +1,4 @@
-# DiplomadoIA2026C3
+# Diplomado Inteligencia Artificial Generativa
 
 Material práctico del **Diplomado en Inteligencia Artificial Generativa**.
 El proyecto reúne ejemplos de modelos de lenguaje, embeddings, búsqueda
