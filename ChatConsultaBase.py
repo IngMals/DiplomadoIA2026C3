@@ -5,10 +5,10 @@ import numpy as np
 import warnings
 from pathlib import Path
 from typing import Dict, List, Tuple
+import deeplake
 from dotenv import load_dotenv
 
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.vectorstores import DeepLake
 from langchain_openai import ChatOpenAI
 from langchain.schema import HumanMessage
 from langchain.memory import ConversationSummaryMemory
@@ -59,35 +59,42 @@ def retrieve_top_embedding(cfg: Dict, query: str) -> Tuple[str, float]:
     dl_cfg = cfg["deeplake"]
     emb_cfg = cfg["embedding"]
     k = int(cfg["retrieval"].get("k", 5))
+    if k <= 0:
+        raise ValueError("retrieval.k debe ser mayor que cero")
 
-    # Cargar embeddings
+    dataset_path = Path(dl_cfg["dataset_path"])
+    if not dataset_path.is_absolute():
+        dataset_path = PROJECT_ROOT / dataset_path
+    dataset_path = dataset_path.expanduser().resolve()
+    if not dataset_path.is_dir():
+        raise FileNotFoundError(f"No se encontró la base DeepLake en: {dataset_path}")
+
+    # Cargar embeddings y la base local sin inicializar el cliente remoto de Activeloop.
     embeddings = HuggingFaceEmbeddings(
         model_name=emb_cfg["model_name"],
         model_kwargs={"device": emb_cfg.get("device", "cpu")},
         encode_kwargs={"normalize_embeddings": bool(emb_cfg.get("normalize_embeddings", True))}
     )
+    dataset = deeplake.load(
+        str(dataset_path),
+        read_only=bool(dl_cfg.get("read_only", True)),
+        verbose=False,
+    )
+    dataset.checkout("main")
 
-    dataset_path = Path(dl_cfg["dataset_path"])
-    if not dataset_path.is_absolute():
-        dataset_path = PROJECT_ROOT / dataset_path
-    db = DeepLake(dataset_path=dataset_path, embedding=embeddings, read_only=dl_cfg.get("read_only", True))
-
-    # Buscar los k más similares
-    results = db.similarity_search(query, k=k)
-    docs_text = [r.page_content for r in results]
-
-    # Calcular similitud explícita
+    # Buscar los k más similares usando los embeddings almacenados.
     q_vec = np.array(embeddings.embed_query(query), dtype=np.float32)
-    d_vecs = np.array(embeddings.embed_documents(docs_text), dtype=np.float32)
-
+    d_vecs = np.array(dataset["embedding"].numpy(), dtype=np.float32)
     scores = [cosine_similarity(q_vec, d) for d in d_vecs]
-    best_idx = int(np.argmax(scores))
-    best_text = docs_text[best_idx]
-    best_score = scores[best_idx]
+    top_indices = np.argsort(scores)[::-1][: min(k, len(scores))]
+    best_idx = int(top_indices[0])
+    texts = dataset["text"].data(aslist=True)["value"]
+    best_text = str(texts[best_idx])
+    best_score = float(scores[best_idx])
 
     print(f"\nTop {k} resultados por similitud del coseno:")
-    for i, s in enumerate(scores):
-        print(f"[{i+1}] cos={s:.4f}")
+    for rank, i in enumerate(top_indices, start=1):
+        print(f"[{rank}] cos={scores[i]:.4f}")
     print("-" * 80)
 
     return best_text, best_score
